@@ -13,7 +13,7 @@ from app.agents.llm import sync_chat
 from app.models.option import FlightOption, HotelOption
 from app.validation.fact_checker import run_deterministic_checks
 
-VERIFIER_PROMPT = """You are a factual accuracy auditor for a travel search assistant.
+VERIFIER_PROMPT = """You are a factual accuracy auditor for a Booking Recommendation.
 You will receive:
 1. The AI assistant's response to a user
 2. The grounding data (flight/hotel inventory from real crawled sources) the assistant was given
@@ -60,6 +60,10 @@ def _llm_verify(
             ],
             temperature=0.0,
             provider=provider,
+            max_tokens=200,
+            thinking_budget=0,
+            timeout_ms=10_000,
+            label="verify",
         ).strip()
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
@@ -95,21 +99,29 @@ def verify_response(
             "grounded": bool,
         }
     """
+    from app.config import settings
+
     flights = flights or []
     hotels = hotels or []
 
     # Step 1: Deterministic checks against actual inventory
     det_score, det_issues = run_deterministic_checks(ai_response, flights, hotels)
 
-    # Step 2: LLM verification
-    llm_result = _llm_verify(ai_response, grounding_context, user_question, provider)
-    llm_score = llm_result.get("confidence", 0.0)
-    llm_issues = llm_result.get("issues", [])
-    llm_grounded = llm_result.get("grounded", False)
-    llm_safe = llm_result.get("safe_to_show", True)
+    # Step 2: LLM verification (optional)
+    llm_grounded = False
+    llm_safe = True
+    llm_issues: list[str] = []
+    llm_score = 0.0
+
+    if settings.verification_llm_enabled:
+        llm_result = _llm_verify(ai_response, grounding_context, user_question, provider)
+        llm_score = llm_result.get("confidence", 0.0)
+        llm_issues = llm_result.get("issues", [])
+        llm_grounded = llm_result.get("grounded", False)
+        llm_safe = llm_result.get("safe_to_show", True)
 
     # Step 3: Combine scores
-    combined = round(0.6 * det_score + 0.4 * llm_score, 3)
+    combined = round(0.6 * det_score + 0.4 * llm_score, 3) if settings.verification_llm_enabled else det_score
 
     # If deterministic checks found hard failures, override safety
     safe_to_show = llm_safe
@@ -131,5 +143,5 @@ def verify_response(
         "llm_score": llm_score,
         "issues": unique_issues,
         "safe_to_show": safe_to_show,
-        "grounded": llm_grounded and det_score >= 0.7,
+        "grounded": (llm_grounded if settings.verification_llm_enabled else True) and det_score >= 0.7,
     }

@@ -1,23 +1,33 @@
-import os
-os.environ["ANONYMIZED_TELEMETRY"] = "false"
-
-import streamlit as st
-from datetime import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
-
-from app.agents.llm import sync_chat
-from app.agents.intent import extract_intent
-from app.config import settings
+from app.validation.response_verifier import verify_response
+from app.crawler.scraper import get_hotel_search_urls, get_flight_search_urls
 from app.mock.inventory_api import (
     get_available_flights,
     get_available_hotels,
     get_available_routes,
     get_available_cities,
 )
-from app.crawler.scraper import get_hotel_search_urls, get_flight_search_urls
-from app.validation.response_verifier import verify_response
+from app.config import settings
+from app.agents.intent import extract_intent
+from app.agents.llm import sync_chat
+from dotenv import load_dotenv
+from datetime import datetime
+import logging
+import streamlit as st
+import os
+os.environ["ANONYMIZED_TELEMETRY"] = "false"
+
+
+load_dotenv()
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
+# Keep noisy libraries at INFO, except httpx — DEBUG shows retry status codes
+logging.getLogger("httpx").setLevel(logging.DEBUG)
+logging.getLogger("httpcore").setLevel(logging.INFO)
+logging.getLogger("google_genai").setLevel(logging.DEBUG)
 
 # -- Logging --
 LOG_DIR = os.path.join(os.path.dirname(__file__), "chat_log")
@@ -30,11 +40,13 @@ def _log(question: str, answer: str, verification: dict | None = None):
     lines = [f"[{ts}]", f"USER: {question}", f"AGENT: {answer}"]
     if verification:
         lines.append(f"CONFIDENCE: {verification.get('confidence', 'N/A')}")
-        lines.append(f"DETERMINISTIC: {verification.get('deterministic_score', 'N/A')}")
+        lines.append(
+            f"DETERMINISTIC: {verification.get('deterministic_score', 'N/A')}")
         lines.append(f"LLM_SCORE: {verification.get('llm_score', 'N/A')}")
         issues = verification.get("issues", [])
         lines.append(f"ISSUES: {', '.join(issues) if issues else 'None'}")
-        lines.append(f"SAFE_TO_SHOW: {verification.get('safe_to_show', 'N/A')}")
+        lines.append(
+            f"SAFE_TO_SHOW: {verification.get('safe_to_show', 'N/A')}")
         lines.append(f"GROUNDED: {verification.get('grounded', 'N/A')}")
     lines.append("-" * 80)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -42,8 +54,8 @@ def _log(question: str, answer: str, verification: dict | None = None):
 
 
 # -- Streamlit layout --
-st.set_page_config(page_title="Travel Search Assistant", layout="wide")
-st.title("Travel Search Assistant")
+st.set_page_config(page_title="Booking Recommendation", layout="wide")
+st.title("Booking Recommendation")
 
 with st.sidebar:
     st.header("Settings")
@@ -60,7 +72,8 @@ with st.sidebar:
     routes = get_available_routes()
     cities = get_available_cities()
     if routes:
-        route_set = sorted({f"{r['origin']}->{r['destination']}" for r in routes})
+        route_set = sorted(
+            {f"{r['origin']}->{r['destination']}" for r in routes})
         st.text(f"Flight routes: {len(route_set)}")
         for r in route_set:
             st.text(f"  {r}")
@@ -75,6 +88,8 @@ with st.sidebar:
 # -- Chat state --
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "last_intent" not in st.session_state:
+    st.session_state.last_intent = None
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -144,7 +159,8 @@ def _build_alternatives_text() -> str:
     if cities:
         lines.append(f"Hotels available in: {', '.join(cities)}")
     if not routes and not cities:
-        lines.append("No crawled data available. The crawler may not have run yet.")
+        lines.append(
+            "No crawled data available. The crawler may not have run yet.")
     return "\n".join(lines)
 
 
@@ -196,7 +212,7 @@ def _filter_flights_by_time(flights, intent: dict):
     return filtered
 
 
-SYSTEM_PROMPT = """You are a travel search assistant. You help users find flights and hotels \
+SYSTEM_PROMPT = """You are a Booking Recommendation. You help users find flights and hotels \
 based on real crawled data from Booking.com and Traveloka.
 
 STRICT RULES:
@@ -225,7 +241,8 @@ def _build_ota_links(intent: dict) -> str:
 
     try:
         dep_date = date.fromisoformat(dep) if dep else None
-        ret_date = date.fromisoformat(ret) if ret else (dep_date + timedelta(days=4) if dep_date else None)
+        ret_date = date.fromisoformat(ret) if ret else (
+            dep_date + timedelta(days=4) if dep_date else None)
     except ValueError:
         dep_date = ret_date = None
 
@@ -253,11 +270,13 @@ if prompt := st.chat_input("Ask about flights or hotels..."):
 
     with st.chat_message("assistant"):
         # Step 1: Extract intent
-        with st.spinner("Understanding your request..."):
+        with st.spinner("Thinking..."):
             intent = extract_intent(
                 prompt,
-                st.session_state.messages[:-1],  # history without current message
+                # history without current message
+                st.session_state.messages[:-1],
                 provider=provider,
+                last_intent=st.session_state.last_intent,
             )
 
         # Step 2: Query inventory based on intent
@@ -266,6 +285,11 @@ if prompt := st.chat_input("Ask about flights or hotels..."):
         grounding_context = ""
 
         search_type = intent.get("search_type", "general")
+
+        # Persist intent so follow-up queries can inherit parameters
+        # even after they scroll out of the conversation history window
+        if search_type != "general":
+            st.session_state.last_intent = intent
 
         if search_type in ("flight", "both"):
             origin = intent.get("origin")
@@ -276,13 +300,15 @@ if prompt := st.chat_input("Ask about flights or hotels..."):
                 try:
                     from datetime import date
                     dep_date = date.fromisoformat(dep_date_str)
-                    flights = get_available_flights(origin, destination, dep_date)
+                    flights = get_available_flights(
+                        origin, destination, dep_date)
                     flights = _filter_flights_by_time(flights, intent)
                 except ValueError:
                     pass
 
         if search_type in ("hotel", "both"):
-            dest_city = intent.get("destination_city") or intent.get("destination")
+            dest_city = intent.get(
+                "destination_city") or intent.get("destination")
             checkin_str = intent.get("departure_date")
 
             if dest_city and checkin_str:
@@ -294,7 +320,8 @@ if prompt := st.chat_input("Ask about flights or hotels..."):
                     # Filter by max price if specified
                     max_price = intent.get("max_price")
                     if max_price and hotels:
-                        hotels = [h for h in hotels if h.price_per_night <= max_price]
+                        hotels = [
+                            h for h in hotels if h.price_per_night <= max_price]
                 except ValueError:
                     pass
 
@@ -316,19 +343,22 @@ if prompt := st.chat_input("Ask about flights or hotels..."):
             context_parts.append(_build_alternatives_text())
             ota_links = _build_ota_links(intent)
             if ota_links:
-                context_parts.append(f"\n=== OTA SEARCH LINKS ===\n{ota_links}")
+                context_parts.append(
+                    f"\n=== OTA SEARCH LINKS ===\n{ota_links}")
 
         grounding_context = "\n\n".join(context_parts)
 
         # Step 4: Generate response
-        system_content = SYSTEM_PROMPT + "\n\n" + grounding_context if grounding_context else SYSTEM_PROMPT
+        system_content = SYSTEM_PROMPT + "\n\n" + \
+            grounding_context if grounding_context else SYSTEM_PROMPT
         chat_history = [{"role": "system", "content": system_content}]
-        for m in st.session_state.messages:
+        for m in st.session_state.messages[-10:]:
             chat_history.append({"role": m["role"], "content": m["content"]})
 
         try:
-            with st.spinner("Searching..."):
-                reply = sync_chat(chat_history, temperature=0.2, provider=provider)
+            with st.spinner("Thinking..."):
+                reply = sync_chat(
+                    chat_history, temperature=0.2, provider=provider, label="response")
         except Exception as exc:
             st.error(f"LLM error: {exc}")
             st.stop()
@@ -362,27 +392,27 @@ if prompt := st.chat_input("Ask about flights or hotels..."):
 
         st.markdown(reply)
 
-        if verification_info:
-            conf = verification_info["confidence"]
-            det = verification_info["deterministic_score"]
-            llm = verification_info["llm_score"]
-            if conf >= 0.85:
-                color = "green"
-            elif conf >= 0.60:
-                color = "orange"
-            else:
-                color = "red"
-            st.markdown(
-                f"---\n**Confidence:** :{color}[{conf:.0%}]"
-                f" &nbsp;(facts: {det:.0%} | LLM: {llm:.0%})"
-            )
-            if verification_info.get("issues"):
-                st.warning("Issues: " + ", ".join(verification_info["issues"]))
+        # if verification_info:
+        #     conf = verification_info["confidence"]
+        #     det = verification_info["deterministic_score"]
+        #     llm = verification_info["llm_score"]
+        #     if conf >= 0.85:
+        #         color = "green"
+        #     elif conf >= 0.60:
+        #         color = "orange"
+        #     else:
+        #         color = "red"
+        #     st.markdown(
+        #         f"---\n**Confidence:** :{color}[{conf:.0%}]"
+        #         f" &nbsp;(facts: {det:.0%} | LLM: {llm:.0%})"
+        #     )
+        #     # if verification_info.get("issues"):
+        #     st.warning("Issues: " + ", ".join(verification_info["issues"]))
 
         # Save message
         msg_data = {"role": "assistant", "content": reply}
-        if verification_info:
-            msg_data["verification"] = verification_info
+        # if verification_info:
+        #     msg_data["verification"] = verification_info
         st.session_state.messages.append(msg_data)
 
         _log(prompt, reply, verification_info or None)
