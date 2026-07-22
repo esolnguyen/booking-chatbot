@@ -1,0 +1,4 @@
+# Development / test dependencies
+-r requirements.txt
+pytest==8.3.4
+pyyaml==6.0.2  # golden_set.yaml for the eval harness (evals/)

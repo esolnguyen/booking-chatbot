@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_live_evals:
+        description: "Also run LIVE LLM evals against Azure OpenAI (uses credits)"
+        type: boolean
+        default: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Offline gate — runs on every push/PR. Deterministic, no network, no spend.
+  # Covers the unit tests for the guardrails AND the offline routing evals
+  # (which assert the deterministic hard caps and snapshot soft-route behaviour).
+  # ---------------------------------------------------------------------------
+  offline:
+    name: Unit tests + offline routing evals
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Unit tests + offline evals (pytest)
+        run: python -m pytest -q
+      - name: Routing eval report (offline)
+        run: python -m evals.run_evals
+
+  # ---------------------------------------------------------------------------
+  # Live evals — manual only (workflow_dispatch with run_live_evals=true).
+  # Hits real Azure OpenAI, so it is gated behind secrets and an explicit opt-in
+  # to avoid burning credits on every commit.
+  # ---------------------------------------------------------------------------
+  live-evals:
+    name: Live LLM evals (manual, gated)
+    runs-on: ubuntu-latest
+    needs: offline
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_live_evals }}
+    environment: azure-evals
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Run live evals
+        env:
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION }}
+          AZURE_OPENAI_CHAT_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_CHAT_DEPLOYMENT }}
+          AZURE_OPENAI_EMBEDDING_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_EMBEDDING_DEPLOYMENT }}
+        run: python -m evals.run_evals --live

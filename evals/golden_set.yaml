@@ -1,0 +1,250 @@
+# Golden evaluation set for the booking recommendation pipeline.
+#
+# Built from the REAL app/mock/seed_data.py inventory (Sydney / Tokyo / London /
+# Singapore / Bangkok). NOTE: the markdown docs under test/ still describe a
+# "New York / JFK" inventory that no longer exists in seed_data.py — do not seed
+# scenarios from those; they are stale.
+#
+# Each scenario drives the pipeline deterministically in OFFLINE mode:
+#   - `request`     -> the BookingRequest fields
+#   - `agent_pick`  -> what the (faked) recommendation agent returns
+#   - `verifier`    -> what the (faked) verification agent returns (optional;
+#                      defaults to a clean pass)
+#   - `expected`    -> the asserted outcome
+#
+# expected.guaranteed:
+#   true  -> the route is forced by a DETERMINISTIC hard cap (inventory / policy /
+#            price / claim / no-inventory). These are asserted in CI (test_evals.py).
+#   false -> the route depends on the hand-tuned confidence formula + thresholds.
+#            Scored for routing precision/recall and surfaced as a CALIBRATION
+#            divergence if it disagrees with the design intent, but NOT a CI gate.
+#
+# expected.must_cite / expected.avoid_policy_violation are checked only in LIVE
+# mode (real LLM), where the agent's own pick/citations are under test.
+
+scenarios:
+  # ---------------------------------------------------------------- HIGH ----
+  - id: sydney-standard-good
+    title: "Standard tier, compliant Sydney trip -> auto_suggest"
+    request:
+      origin: SFO
+      destination: Sydney
+      departure_date: 2026-04-01
+      return_date: 2026-04-04
+      tier: standard
+      trip_purpose: business
+      preferences: ["non_stop"]
+    agent_pick:
+      top_flight_id: FL-008      # Delta SFO->SYD, $1500 economy, 0 stops, 30 seats
+      top_hotel_id: HT-008       # Marriott Sydney CBD, $420/night, 8 rooms
+      explanation: >-
+        Delta flight FL-008 at $1500 is a non-stop, policy-compliant option well
+        under the international economy limit. Marriott Sydney CBD at $420/night
+        keeps the 3-night trip total near $2760, within standard limits [POL-001].
+        Sydney is a low-risk business hub [DEST-004].
+      evidence_refs: ["POL-001", "DEST-004"]
+    expected:
+      route: auto_suggest
+      guaranteed: true            # all deterministic checks pass; no caps fire
+      min_confidence: 0.85
+      must_cite: ["POL-001"]
+      avoid_policy_violation: true
+
+  - id: london-executive-good
+    title: "Executive tier, generous limits, compliant London trip -> auto_suggest"
+    request:
+      origin: SFO
+      destination: London
+      departure_date: 2026-04-01
+      return_date: 2026-04-05
+      tier: executive
+      trip_purpose: conference
+      preferences: []
+    agent_pick:
+      top_flight_id: FL-004      # Delta SFO->LHR, $2100 economy, 0 stops, 30 seats
+      top_hotel_id: HT-005       # Marriott Canary Wharf, $450/night, 5 rooms
+      explanation: >-
+        Delta FL-004 at $2100 non-stop and Marriott Canary Wharf at $450/night
+        total $3900 for 4 nights, comfortably within executive limits [POL-002].
+        London is a low-risk financial center [DEST-002].
+      evidence_refs: ["POL-002", "DEST-002"]
+    expected:
+      route: auto_suggest
+      guaranteed: true
+      min_confidence: 0.85
+      must_cite: ["POL-002"]
+      avoid_policy_violation: true
+
+  # -------------------------------------------------------------- SOFT -------
+  - id: tokyo-cherry-blossom-caution
+    title: "Compliant Tokyo trip during cherry-blossom demand -> suggest_with_caution"
+    notes: >-
+      All deterministic checks pass, but the verifier surfaces event-demand and
+      low-room-availability risk. This lands at ~0.84 — just under the 0.85
+      auto_suggest threshold. A sensitive calibration case by design.
+    request:
+      origin: SFO
+      destination: Tokyo
+      departure_date: 2026-04-01
+      return_date: 2026-04-05
+      tier: standard
+      trip_purpose: business
+      preferences: []
+    agent_pick:
+      top_flight_id: FL-001      # Delta SFO->NRT, $1800 economy, 0 stops, 45 seats
+      top_hotel_id: HT-001       # Marriott Shinjuku, $350/night, only 3 rooms
+      explanation: >-
+        Delta FL-001 at $1800 non-stop with Marriott Shinjuku at $350/night, trip
+        total $3200 for 4 nights [POL-001]. Note elevated cherry-blossom demand on
+        these dates [EVT-001].
+      evidence_refs: ["POL-001", "EVT-001"]
+    verifier:
+      evidence_grounded: true
+      risk_flags: ["high_demand_event_EVT-001", "low_room_availability_HT-001", "price_volatility"]
+      issues_found: ["Cherry-blossom season may inflate rates beyond the quote."]
+      confidence_adjustment: -0.1
+      verification_notes: "Compliant but demand risk warrants caution."
+    expected:
+      route: suggest_with_caution
+      guaranteed: false           # depends on the confidence formula / thresholds
+      max_confidence: 0.85
+      min_confidence: 0.60
+
+  - id: sydney-hallucinated-evidence-ref
+    title: "Compliant pick but a fabricated evidence ref -> intent: caution"
+    notes: >-
+      The agent cites POL-999, which was never retrieved. This adds one risk flag
+      and drops the ref from grounded evidence, but hallucinated refs are NOT a
+      hard cap — one fabricated ref barely dents confidence, so this currently
+      routes auto_suggest. Expected intent is caution; the gap is the finding.
+    request:
+      origin: SFO
+      destination: Sydney
+      departure_date: 2026-04-01
+      return_date: 2026-04-04
+      tier: standard
+      trip_purpose: business
+      preferences: []
+    agent_pick:
+      top_flight_id: FL-008
+      top_hotel_id: HT-008
+      explanation: >-
+        Delta FL-008 at $1500 non-stop and Marriott Sydney CBD at $420/night,
+        total $2760 for 3 nights, fully compliant [POL-999].
+      evidence_refs: ["POL-999"]   # not in the retrieved set -> hallucinated
+    expected:
+      route: suggest_with_caution  # DESIGN INTENT — fabricated evidence is a trust risk
+      guaranteed: false
+      risk_flags_include_substr: ["hallucinated_evidence_refs"]
+
+  # ------------------------------------------------------- HARD-CAP / LOW ----
+  - id: singapore-policy-violation
+    title: "Over-budget, non-preferred hotel (Marina Bay Sands) -> human_review"
+    request:
+      origin: SFO
+      destination: Singapore
+      departure_date: 2026-04-01
+      return_date: 2026-04-05
+      tier: standard
+      trip_purpose: business
+      preferences: []
+    agent_pick:
+      top_flight_id: FL-006      # Delta SFO->SIN, $2400 economy (compliant)
+      top_hotel_id: HT-006       # Marina Bay Sands, $550/night (> $500, non-preferred)
+      explanation: >-
+        Marina Bay Sands at $550/night with Delta FL-006 at $2400. Total $4600 for
+        4 nights [POL-001].
+      evidence_refs: ["POL-001", "DEST-003"]
+    expected:
+      route: human_review
+      guaranteed: true            # policy fail caps confidence at 0.50 (< 0.60)
+      max_confidence: 0.50
+
+  - id: bangkok-songkran-inventory
+    title: "Sold-out flight + hotel during Songkran -> human_review"
+    request:
+      origin: SFO
+      destination: Bangkok
+      departure_date: 2026-04-13
+      return_date: 2026-04-16
+      tier: standard
+      trip_purpose: business
+      preferences: []
+    agent_pick:
+      top_flight_id: FL-011      # Delta SFO->BKK, 0 seats (SOLD OUT)
+      top_hotel_id: HT-011       # Marriott Sukhumvit, 0 rooms (SOLD OUT)
+      explanation: >-
+        Delta FL-011 at $2200 and Marriott Sukhumvit at $200/night, total $2800
+        for 3 nights [POL-001]. Songkran festival disruptions apply [EVT-002].
+      evidence_refs: ["POL-001", "EVT-002"]
+    expected:
+      route: human_review
+      guaranteed: true            # inventory fail caps confidence at 0.40
+      max_confidence: 0.40
+      risk_flags_include_substr: ["inventory_unavailable"]
+
+  - id: unknown-destination-no-inventory
+    title: "Destination with no flights or hotels (Lagos) -> human_review"
+    request:
+      origin: SFO
+      destination: Lagos
+      departure_date: 2026-04-01
+      return_date: 2026-04-05
+      tier: standard
+      trip_purpose: business
+      preferences: []
+    # No agent_pick: the pipeline short-circuits before the agent runs.
+    expected:
+      route: human_review
+      guaranteed: true
+      max_confidence: 0.0
+      min_confidence: 0.0
+      risk_flags_include_substr: ["no_inventory"]
+
+  - id: tokyo-price-mismatch
+    title: "Compliant pick but fabricated total price in explanation -> human_review"
+    notes: "Exercises the deterministic fact_checker price path (cap 0.30)."
+    request:
+      origin: SFO
+      destination: Tokyo
+      departure_date: 2026-04-01
+      return_date: 2026-04-05
+      tier: standard
+      trip_purpose: business
+      preferences: []
+    agent_pick:
+      top_flight_id: FL-001
+      top_hotel_id: HT-001
+      explanation: >-
+        Delta FL-001 with Marriott Shinjuku — a great value, the whole trip comes
+        to roughly $999 all in [POL-001].
+      evidence_refs: ["POL-001"]
+    expected:
+      route: human_review
+      guaranteed: true            # price mismatch caps confidence at 0.30
+      max_confidence: 0.30
+      risk_flags_include_substr: ["price_mismatch_in_explanation"]
+
+  - id: tokyo-fabricated-stops
+    title: "Compliant pick but fabricated stop count -> human_review"
+    notes: "Exercises the deterministic claim checker (cap 0.40). FL-001 is non-stop."
+    request:
+      origin: SFO
+      destination: Tokyo
+      departure_date: 2026-04-01
+      return_date: 2026-04-05
+      tier: standard
+      trip_purpose: business
+      preferences: []
+    agent_pick:
+      top_flight_id: FL-001      # actually 0 stops
+      top_hotel_id: HT-001
+      explanation: >-
+        This convenient 1 stop Delta flight FL-001 at $1800 pairs with Marriott
+        Shinjuku at $350/night, total $3200 for 4 nights [POL-001].
+      evidence_refs: ["POL-001"]
+    expected:
+      route: human_review
+      guaranteed: true            # fabricated claim caps confidence at 0.40
+      max_confidence: 0.40
+      risk_flags_include_substr: ["fabricated_claims_in_explanation"]
