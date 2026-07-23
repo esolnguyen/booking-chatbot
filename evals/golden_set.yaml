@@ -21,6 +21,12 @@
 #
 # expected.must_cite / expected.avoid_policy_violation are checked only in LIVE
 # mode (real LLM), where the agent's own pick/citations are under test.
+#
+# expected.trap_route (optional): the route a NON-defensive harness would wrongly
+#   produce — i.e. the LLM's explanation looks good so the naive answer is
+#   auto_suggest, but a deterministic check catches a fabrication. The harness
+#   "avoids the trap" when actual_route != trap_route. Reported as a
+#   trap-avoidance rate and asserted in CI (see evals/test_evals.py).
 
 scenarios:
   # ---------------------------------------------------------------- HIGH ----
@@ -111,12 +117,13 @@ scenarios:
       min_confidence: 0.60
 
   - id: sydney-hallucinated-evidence-ref
-    title: "Compliant pick but a fabricated evidence ref -> intent: caution"
+    title: "Compliant pick but a fabricated evidence ref -> suggest_with_caution"
     notes: >-
-      The agent cites POL-999, which was never retrieved. This adds one risk flag
-      and drops the ref from grounded evidence, but hallucinated refs are NOT a
-      hard cap — one fabricated ref barely dents confidence, so this currently
-      routes auto_suggest. Expected intent is caution; the gap is the finding.
+      The agent cites POL-999, which was never retrieved. As of the
+      hallucinated_evidence hard cap this is a DETERMINISTIC trust boundary:
+      any fabricated citation caps confidence at 0.70, forcing at least
+      suggest_with_caution so a fabricated ref can never silently auto_suggest.
+      (Previously a soft calibration gap that routed auto_suggest at ~0.97.)
     request:
       origin: SFO
       destination: Sydney
@@ -133,9 +140,39 @@ scenarios:
         total $2760 for 3 nights, fully compliant [POL-999].
       evidence_refs: ["POL-999"]   # not in the retrieved set -> hallucinated
     expected:
-      route: suggest_with_caution  # DESIGN INTENT — fabricated evidence is a trust risk
-      guaranteed: false
+      route: suggest_with_caution
+      guaranteed: true             # hallucinated_evidence cap forces conf <= 0.70
+      max_confidence: 0.70
       risk_flags_include_substr: ["hallucinated_evidence_refs"]
+      trap_route: auto_suggest     # a non-defensive harness would auto_suggest this
+
+  - id: london-mixed-evidence-ref
+    title: "Compliant pick citing one real + one fabricated ref -> suggest_with_caution"
+    notes: >-
+      Exercises the grounded/hallucinated partition together with the cap: POL-002
+      is real (kept in evidence_refs), POL-404 is fabricated (dropped + flagged +
+      caps confidence). A single bad citation among good ones still trips the cap.
+    request:
+      origin: SFO
+      destination: London
+      departure_date: 2026-04-01
+      return_date: 2026-04-05
+      tier: executive
+      trip_purpose: conference
+      preferences: []
+    agent_pick:
+      top_flight_id: FL-004
+      top_hotel_id: HT-005
+      explanation: >-
+        Delta FL-004 at $2100 non-stop and Marriott Canary Wharf at $450/night,
+        total $3900 for 4 nights, within executive limits [POL-002][POL-404].
+      evidence_refs: ["POL-002", "POL-404"]  # POL-404 was never retrieved
+    expected:
+      route: suggest_with_caution
+      guaranteed: true             # hallucinated_evidence cap forces conf <= 0.70
+      max_confidence: 0.70
+      risk_flags_include_substr: ["hallucinated_evidence_refs"]
+      trap_route: auto_suggest
 
   # ------------------------------------------------------- HARD-CAP / LOW ----
   - id: singapore-policy-violation
@@ -224,6 +261,7 @@ scenarios:
       guaranteed: true            # price mismatch caps confidence at 0.30
       max_confidence: 0.30
       risk_flags_include_substr: ["price_mismatch_in_explanation"]
+      trap_route: auto_suggest    # explanation reads fine; only the price check catches it
 
   - id: tokyo-fabricated-stops
     title: "Compliant pick but fabricated stop count -> human_review"
@@ -248,3 +286,4 @@ scenarios:
       guaranteed: true            # fabricated claim caps confidence at 0.40
       max_confidence: 0.40
       risk_flags_include_substr: ["fabricated_claims_in_explanation"]
+      trap_route: auto_suggest    # "1 stop" reads plausibly; only the claim check catches it

@@ -126,6 +126,25 @@ def routing_metrics(grades: list[ScenarioGrade]) -> dict[str, dict[str, float]]:
     return metrics
 
 
+def trap_avoidance(outcomes: list[ScenarioOutcome]) -> dict[str, object]:
+    """How often the harness avoids the trap route on trap-labelled scenarios.
+
+    A "trap" scenario carries ``expected.trap_route`` — the route a non-defensive
+    harness would wrongly produce (the LLM's explanation reads fine, so the naive
+    answer is auto_suggest) but a deterministic check should catch. The harness
+    avoids the trap when its actual route differs from the trap route.
+    """
+    traps = [o for o in outcomes if o.expected.get("trap_route")]
+    avoided = [o for o in traps if o.actual_route != o.expected["trap_route"]]
+    fell_for = [o.id for o in traps if o.actual_route == o.expected["trap_route"]]
+    return {
+        "traps": len(traps),
+        "avoided": len(avoided),
+        "rate": len(avoided) / len(traps) if traps else 1.0,
+        "fell_for": fell_for,
+    }
+
+
 def grounding_rate(outcomes: list[ScenarioOutcome]) -> dict[str, float]:
     """Aggregate evidence-grounding stats (most meaningful in live mode)."""
     grounded = sum(len(o.grounded_refs) for o in outcomes)
@@ -161,6 +180,11 @@ class Report:
     def divergences(self) -> list[ScenarioGrade]:
         """Soft scenarios whose route disagrees with design intent."""
         return [g for g in self.soft if not g.route_ok]
+
+    @property
+    def traps_all_avoided(self) -> bool:
+        """True if every trap-labelled scenario was routed away from its trap."""
+        return trap_avoidance(self.outcomes)["rate"] == 1.0
 
     @property
     def ci_ok(self) -> bool:
@@ -232,6 +256,17 @@ def format_report(report: Report) -> str:
         f"\nEvidence grounding: {gr['grounded']}/{gr['claimed']} refs grounded "
         f"({gr['rate']:.1%}); {gr['hallucinated']} hallucinated"
     )
+
+    # Trap avoidance — did deterministic checks catch the plausible-but-wrong picks?
+    tr = trap_avoidance(report.outcomes)
+    if tr["traps"]:
+        line = (
+            f"Trap avoidance: {tr['avoided']}/{tr['traps']} trap scenarios caught "
+            f"({tr['rate']:.1%})"
+        )
+        if tr["fell_for"]:
+            line += f" — FELL FOR: {', '.join(tr['fell_for'])}"
+        lines.append(line)
 
     # Headline results
     lines.append("\n" + "=" * 72)

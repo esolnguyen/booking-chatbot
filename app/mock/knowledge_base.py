@@ -94,12 +94,33 @@ def get_vector_store() -> Chroma:
     return _vector_store
 
 
+def _filter_by_relevance(
+    scored_docs: list[tuple[Document, float]],
+    min_score: float,
+) -> list[Document]:
+    """Keep only docs whose relevance score clears ``min_score`` (pure helper).
+
+    ``scored_docs`` is a list of (document, relevance_score) pairs as returned by
+    Chroma's ``similarity_search_with_relevance_scores`` (scores normalised to
+    roughly 0-1, higher = more relevant). Split out so the floor logic is unit-
+    testable without a live vector store.
+    """
+    return [doc for doc, score in scored_docs if score >= min_score]
+
+
 def search_knowledge_base(
     query: str,
     top_k: int = 5,
     filter_metadata: dict | None = None,
+    min_score: float | None = None,
 ) -> list[Document]:
-    """Search the knowledge base with optional metadata filtering."""
+    """Search the knowledge base with optional metadata filtering.
+
+    When a relevance floor is active (``min_score`` > 0, defaulting to
+    ``settings.retrieval_min_score``), weak matches are dropped so they can't
+    pollute downstream context. A floor of 0 keeps the original pure top-k
+    behaviour.
+    """
     store = get_vector_store()
 
     where_filter = None
@@ -112,8 +133,14 @@ def search_knowledge_base(
         elif conditions:
             where_filter = {"$and": conditions}
 
-    results = store.similarity_search(query, k=top_k, filter=where_filter)
-    return results
+    threshold = settings.retrieval_min_score if min_score is None else min_score
+    if threshold and threshold > 0:
+        scored = store.similarity_search_with_relevance_scores(
+            query, k=top_k, filter=where_filter
+        )
+        return _filter_by_relevance(scored, threshold)
+
+    return store.similarity_search(query, k=top_k, filter=where_filter)
 
 
 def compute_evidence_freshness(docs: list[Document]) -> float:

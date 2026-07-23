@@ -2,3 +2,8 @@
 -r requirements.txt
 pytest==8.3.4
 pyyaml==6.0.2  # golden_set.yaml for the eval harness (evals/)
+
+# Optional, LIVE-only RAG evaluation (`python -m evals.run_evals --live --ragas`).
+# Heavy + needs Azure creds, so left commented; uncomment to run RAGAS locally.
+# ragas>=0.2,<0.3
+# datasets>=2.19

@@ -39,11 +39,22 @@ def test_ci_gate_is_green(report):
     assert report.ci_ok
 
 
+def test_all_traps_avoided(report):
+    """No plausible-but-wrong pick may route to its trap route (auto_suggest)."""
+    from evals.report import trap_avoidance
+
+    tr = trap_avoidance(report.outcomes)
+    assert tr["traps"] > 0, "expected at least one trap-labelled scenario"
+    assert tr["rate"] == 1.0, f"harness fell for traps: {tr['fell_for']}"
+
+
 # --- Observed (snapshot) routes for soft, calibration-sensitive scenarios. ----
 # Update intentionally when the confidence formula / thresholds change.
+# NOTE: sydney-hallucinated-evidence-ref used to live here as a "known calibration
+# gap" that routed auto_suggest. It is now a DETERMINISTIC hard cap
+# (hallucinated_evidence, cap 0.70) and is covered by the guaranteed CI gate above.
 _OBSERVED_SOFT_ROUTES = {
     "tokyo-cherry-blossom-caution": "suggest_with_caution",
-    "sydney-hallucinated-evidence-ref": "auto_suggest",  # known calibration gap
 }
 
 

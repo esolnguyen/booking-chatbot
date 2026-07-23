@@ -5,6 +5,7 @@ from openai import AsyncAzureOpenAI
 
 from app.config import settings
 from app.models.option import FlightOption, HotelOption
+from app import telemetry
 
 
 SYSTEM_PROMPT = """You are a corporate travel recommendation agent. Your job is to:
@@ -94,6 +95,13 @@ async def run_recommendation_agent(
         ],
         temperature=0.1,
     )
+
+    _usage = getattr(response, "usage", None)
+    if _usage is not None:
+        telemetry.record_llm_usage(
+            getattr(_usage, "prompt_tokens", 0) or 0,
+            getattr(_usage, "completion_tokens", 0) or 0,
+        )
 
     content = (response.choices[0].message.content or "").strip()
     if not content:

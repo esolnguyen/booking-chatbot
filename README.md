@@ -21,8 +21,29 @@ A FastAPI + Streamlit project that recommends flight and hotel combinations for 
 - FastAPI
 - Streamlit
 - Pydantic / pydantic-settings
-- LangChain
+- LangChain + LangGraph (StateGraph orchestration)
 - Azure OpenAI
+
+## Harness engineering
+
+The pipeline is built as an AI *harness* — everything around the model that
+makes it trustworthy:
+
+- **Context engineering** — retrieval + rerank, with an optional relevance floor
+  (`retrieval_min_score`) that drops weak matches so they don't pollute context.
+- **Deterministic guardrails** — a composable hard-cap registry
+  (`app/validation/hard_caps.py`): policy / price / claim / inventory /
+  hallucinated-citation / no-evidence signals force confidence to a ceiling the
+  LLM cannot argue past.
+- **Agent loop** — a bounded self-repair loop (`app/orchestrator/graph.py`): a
+  recoverable defect (a fabricated citation) triggers a re-ask with corrective
+  feedback, capped by `max_agent_iterations`; hard fails escalate immediately.
+- **Verification & evals** — the offline golden-set routing harness (`evals/`,
+  CI-gated) plus optional live RAGAS RAG-quality metrics
+  (`python -m evals.run_evals --live --ragas`).
+- **Telemetry** — local-first spans, token counts, and USD cost per run
+  (`app/telemetry.py`); no third-party SaaS by default (optional OpenTelemetry
+  export; LangSmith is an opt-in env flag away).
 
 ## Project Structure
 

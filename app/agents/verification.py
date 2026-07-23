@@ -5,6 +5,7 @@ from openai import AsyncAzureOpenAI
 
 from app.config import settings
 from app.models.option import FlightOption, HotelOption
+from app import telemetry
 
 
 SYSTEM_PROMPT = """You are a corporate travel verification agent. Your role is to CHALLENGE
@@ -83,6 +84,13 @@ async def run_verification_agent(
         ],
         temperature=0.0,
     )
+
+    _usage = getattr(response, "usage", None)
+    if _usage is not None:
+        telemetry.record_llm_usage(
+            getattr(_usage, "prompt_tokens", 0) or 0,
+            getattr(_usage, "completion_tokens", 0) or 0,
+        )
 
     content = (response.choices[0].message.content or "").strip()
     if "```json" in content:

@@ -17,7 +17,13 @@ import json
 import sys
 
 from evals.harness import run_all
-from evals.report import build_report, format_report, routing_metrics, grounding_rate
+from evals.report import (
+    build_report,
+    format_report,
+    grounding_rate,
+    routing_metrics,
+    trap_avoidance,
+)
 
 
 def _check_live_credentials() -> str | None:
@@ -52,7 +58,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also fail the run on soft calibration divergences.",
     )
+    parser.add_argument(
+        "--ragas",
+        action="store_true",
+        help="Also run RAGAS RAG-quality metrics (requires --live + ragas installed).",
+    )
     args = parser.parse_args(argv)
+
+    if args.ragas and not args.live:
+        print("--ragas requires --live (RAGAS needs a real LLM judge).", file=sys.stderr)
+        return 2
 
     if args.live:
         err = _check_live_credentials()
@@ -63,6 +78,16 @@ def main(argv: list[str] | None = None) -> int:
     outcomes = run_all(live=args.live)
     report = build_report(outcomes, live=args.live)
 
+    ragas_scores = None
+    if args.ragas:
+        from evals.harness import load_golden_set
+        from evals.ragas_eval import evaluate_rag
+
+        try:
+            ragas_scores = evaluate_rag(load_golden_set(), outcomes)
+        except RuntimeError as exc:
+            print(f"RAGAS skipped: {exc}", file=sys.stderr)
+
     if args.json:
         summary = {
             "mode": "live" if args.live else "offline",
@@ -72,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
             "divergences": [g.id for g in report.divergences],
             "routing_metrics": routing_metrics(report.grades),
             "grounding": grounding_rate(report.outcomes),
+            "trap_avoidance": trap_avoidance(report.outcomes),
+            **({"ragas": ragas_scores} if ragas_scores is not None else {}),
             "scenarios": [
                 {
                     "id": g.id,
@@ -90,6 +117,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, indent=2))
     else:
         print(format_report(report))
+        if ragas_scores is not None:
+            print("\nRAGAS RAG-quality metrics:")
+            for name, score in ragas_scores.items():
+                print(f"  {name:<22}{score:.3f}" if isinstance(score, float)
+                      else f"  {name:<22}{score}")
 
     failed = not report.ci_ok or (args.strict and report.divergences)
     return 1 if failed else 0

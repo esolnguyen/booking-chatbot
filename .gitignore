@@ -33,4 +33,4 @@ chat_log/
 # OS/editor noise
 .DS_Store
 Thumbs.db
-.vscode/
+.vscode/.venv-eval/
